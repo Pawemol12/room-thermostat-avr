@@ -1,0 +1,50 @@
+/*
+ * bits_config.h
+ *
+ * Created: 22.08.2020 13:44:16
+ *  Author: Pawemol
+ */ 
+
+
+#ifndef BITS_CONFIG_H_
+#define BITS_CONFIG_H_
+
+//Przekaüniki
+#define TRANSMITERS_DDR DDRH
+#define TRANSMITERS_PORT PORTH
+
+#define TRANSMITER_0 0
+#define TRANSMITER_1 1
+#define TRANSMITER_2 2
+
+#define TRANSMITER_0_PIN PINH5
+#define TRANSMITER_1_PIN PINH7
+#define TRANSMITER_2_PIN PINH6
+
+#define TRANSMITERS_COUNT 3
+
+//Ledbar
+#define LEDBAR_DDR DDRF
+#define LEDBAR_PORT PORTF
+
+#define LEDBAR_LED_0 0
+#define LEDBAR_LED_1 1
+#define LEDBAR_LED_2 2
+#define LEDBAR_LED_3 3
+#define LEDBAR_LED_4 4
+#define LEDBAR_LED_5 5
+#define LEDBAR_LED_6 6
+#define LEDBAR_LED_7 7
+
+#define LEDBAR_LED_0_PIN PINF0
+#define LEDBAR_LED_1_PIN PINF1
+#define LEDBAR_LED_2_PIN PINF2
+#define LEDBAR_LED_3_PIN PINF3
+#define LEDBAR_LED_4_PIN PINF4
+#define LEDBAR_LED_5_PIN PINF5
+#define LEDBAR_LED_6_PIN PINF6
+#define LEDBAR_LED_7_PIN PINF7
+
+#define LEDBAR_LED_COUNT 8
+
+#endif /* BITS_CONFIG_H_ */
