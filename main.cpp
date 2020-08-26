@@ -1,13 +1,19 @@
 /*
- * Pokojowy regulator temepratury.cpp
+ * Pokojowy regulator temepratury
+ * main.cpp
  *
  * Created: 05.08.2020 22:45:04
- * Author : Pawemol
+ * Author : Pawemol (Pawe³ Lodzik)
  */ 
 #define F_CPU 16000000UL
-#define BUFF_SIZE   25
+#define BUFF_SIZE   100
+#define CHECK_DS1621_FIRST_CYCLES   10
 #define DS1621_SENSOR_NOT_REACH -862
 #define LCD_MAX_CHARS_IN_LINE 16
+
+#define DS1621_MIN_TEMP -55
+#define DS1621_MAX_TEMP 125
+#define HYSTERESIS_MAX_TEMP 10
 
 //#define USART_EXTEND_RX_BUFFER 
 
@@ -32,8 +38,6 @@ extern "C" {
 #include "usart.h"
 #include "Macros.h"
 #include "bits_config.h"
-
-
 
 //DS1621
 volatile int16_t temperatures[SensorTopAdr+1];
@@ -86,9 +90,7 @@ int main(void)
 	LCD_Initalize();
 
 	uart3_init(BAUD_CALC(9600));
-	//stdout = &uart3_io; // attach uart stream to stdout & stdin
-	//stdin = &uart3_io; // uart0_in and uart0_out are only available if NO_USART_RX or NO_USART_TX is defined
-	
+
 	sei();
 	timer0100us_start();
 	outputDataPtr=temperatures; 
@@ -98,28 +100,46 @@ int main(void)
 	
 	int16_t last_temp = DS1621_SENSOR_NOT_REACH;
 	int16_t max_temp = DS1621_SENSOR_NOT_REACH;
+	int16_t min_temp = DS1621_SENSOR_NOT_REACH;
 	
 	LCD_WriteText("Inicjalizacja");
 	LCD_GoTo(0, 1);
 	LCD_WriteText("Programu");
 	
+	for (int i = 0; i < CHECK_DS1621_FIRST_CYCLES; i++)
+	{
+		ds1621StateMachine();
+		_delay_ms(100);
+	}
+	
+	bool settingsChanged = false;
+	
     while (1) 
     {
-		//uart3_puts("bytes waiting in receiver buffer : ");
-		_delay_ms(50);
-		
 		ds1621StateMachine();
-		
-		
+
 		//Wczytywanie temp z czujnika na lcd
-			
 		if (max_temp < temperatures[0])
 			max_temp = temperatures[0];
+			
+		if (min_temp == DS1621_SENSOR_NOT_REACH) {
+			if (temperatures[0] != 0) {
+				min_temp = temperatures[0];
+			}
+		}
+		
+		if (min_temp > temperatures[0])
+		{
+			min_temp = temperatures[0];
+		}
 		
 		float current_temp_float = temperatures[0]/10 + float((temperatures[0]%10))/10;
 		float max_temp_float = max_temp/10 + float((max_temp%10))/10;
+		float min_temp_float = min_temp/10 + float((min_temp%10))/10;
 		
-		if (last_temp != temperatures[0]) {
+		if (last_temp != temperatures[0] || settingsChanged) {
+			settingsChanged = false;
+			
 			last_temp = temperatures[0];
 			
 			LCD_Clear();
@@ -208,60 +228,146 @@ int main(void)
 			
 			if (current_temp_float <= ledbar_leds_threshold[LEDBAR_LED_7] - hysteresis)
 				bit_clear(LEDBAR_PORT, BIT(LEDBAR_LED_7_PIN));
+				
+			//Wysy³anie informacji o temperaturze do komputera
+			char tempInfoString[50];
+			sprintf(tempInfoString, "TEMP_INFO|%.1f|%.1f|%.1f\n", current_temp_float, max_temp_float, min_temp_float);
+			uart3_putstr(tempInfoString);
 		}
 		
 		if (uart3_AvailableBytes())
 		{
-			uart3_gets(buffer, BUFF_SIZE);
-			uart3_putstr(buffer);
+			char outInfoString[200];
+			uart3_getln(buffer, BUFF_SIZE);
+			
+			if (strcmp(buffer, "FETCH_SETTINGS") == 0)
+			{
+				//Temperatura
+				sprintf(outInfoString, "TEMP_INFO|%.1f|%.1f|%.1f\n", current_temp_float, max_temp_float, min_temp_float);
+				uart3_putstr(outInfoString);
+				
+				//Ostereza
+				sprintf(outInfoString, "OSTERESIS_SETTINGS_INFO|%.1f\n", hysteresis);
+				uart3_putstr(outInfoString);
+				
+				//Wartoœci przekaŸników
+				for (int i = 0; i < TRANSMITERS_COUNT; i++) {
+					sprintf(outInfoString, "TRANSMITER_SETTTINGS_INFO|%i|%.1f\n", i, transmiters_threshold[i]);
+					uart3_putstr(outInfoString);
+				}
+				
+				//Wartoœci led
+				for (int i = 0; i < LEDBAR_LED_COUNT; i++) {
+					sprintf(outInfoString, "LED_SETTTINGS_INFO|%i|%.1f\n", i, ledbar_leds_threshold[i]);
+					uart3_putstr(outInfoString);
+				}
+			} else {
+				//uart3_putstr(buffer);
+				char delim[] = "|";
+				char *ptr = strtok(buffer, delim);
+				//Ustawianie osterozy
+				if (strcmp(ptr, "SET_OSTERESIS") == 0)
+				{
+					bool hysteresisChanged = false;
+					int tokensNumber = 0;
+					float hysteresisValue = hysteresis;
+					while(ptr != NULL)
+					{
+						ptr = strtok(NULL, delim);
+						
+						if (tokensNumber == 0)
+						{
+							hysteresisValue = atof(ptr);
+							
+							if (hysteresisValue > 0 && hysteresisValue <= HYSTERESIS_MAX_TEMP) {
+								hysteresisChanged = true;
+							}
+						}
+						tokensNumber++;
+					}
+					
+					if (hysteresisChanged) {
+						hysteresis = hysteresisValue;
+						eeprom_write_block((const void*)&hysteresis, (void*)&hysteresis_eem, sizeof(float));
+						settingsChanged = true;
+					}
+				}
+				//Ustawianie wartosci transmitera
+				else if (strcmp(ptr, "SET_TRANSMITER_VALUE") == 0)
+				{
+					bool transmiterValueChanged = false;
+					
+					int tokensNumber = 0;
+					int transmiterNumber = -1;
+					float transmiterValue = -1;
+					
+					while(ptr != NULL)
+					{
+						ptr = strtok(NULL, delim);
+						
+						if (tokensNumber == 0)
+						{
+							transmiterNumber = atoi(ptr);
+						}
+						else if (tokensNumber == 1)
+						{
+							transmiterValue = atof(ptr);
+							transmiterValueChanged = true;
+						}
+						tokensNumber++;
+					}
+					
+					if (transmiterValueChanged) {
+						if (transmiterNumber >= 0 && transmiterNumber <= TRANSMITERS_COUNT)
+						{
+							if (transmiterValue >= DS1621_MIN_TEMP && transmiterValue <= DS1621_MAX_TEMP)
+							{
+								transmiters_threshold[transmiterNumber] = transmiterValue;
+								eeprom_write_block((const void*)&transmiters_threshold[transmiterNumber], (void*)&transmiters_threshold_eem[transmiterNumber], sizeof(float));
+								settingsChanged = true;
+							}
+						}
+					}
+				}
+				//Ustawianie wartosci led
+				else if (strcmp(ptr, "SET_LED_VALUE") == 0)
+				{
+					bool ledValueChanged = false;
+					
+					int tokensNumber = 0;
+					int ledNumber = -1;
+					float ledValue = -1;
+					
+					while(ptr != NULL)
+					{
+						ptr = strtok(NULL, delim);
+						
+						if (tokensNumber == 0)
+						{
+							ledNumber = atoi(ptr);
+						}
+						else if (tokensNumber == 1)
+						{
+							ledValue = atof(ptr);
+							ledValueChanged = true;
+						}
+						tokensNumber++;
+					}
+					
+					if (ledValueChanged) {
+						if (ledNumber >= 0 && ledNumber <= LEDBAR_LED_COUNT)
+						{
+							if (ledValue >= DS1621_MIN_TEMP && ledValue <= DS1621_MAX_TEMP)
+							{
+								ledbar_leds_threshold[ledNumber] = ledValue;
+								eeprom_write_block((const void*)&ledbar_leds_threshold[ledNumber], (void*)&ledbar_leds_threshold_eem[ledNumber], sizeof(float));
+								settingsChanged = true;
+							}
+						}
+					}
+				}
+			}
 		}
-		
-		
-		/*uart0_puts("bytes waiting in receiver buffer : ");
-		uart1_puts("bytes waiting in receiver buffer : ");
-		uart2_puts("bytes waiting in receiver buffer : ");*/
-		//uart3_puts("test");
-		//uart3_puts("\r\n");
-		//uart_putc('>');
-		//uart_puts_P(" Googles");
-		//uart_puts("test");
-		
-		//uart3_putint(uart3_AvailableBytes()); // ask for bytes waiting in receiver buffer
-		
-		//uart3_getln(buffer, BUFF_SIZE); // read 24 bytes or one line from usart buffer
-		//char test[BUFF_SIZE];
-		//sprintf(test, " test - %s", buffer);
-		
-		/*LCD_GoTo(0, 1);
-		LCD_WriteText(test);
-		
-		_delay_ms(500);
-		LCD_Clear();*/
-		/*int temp = temperatures[0];
-
-		if (temperatures[0] > 0)
-		{
-			LCD_WriteText("TEST");
-		}
-
-		if (temperatures[0] < 0)
-		{
-			LCD_WriteText("Miejsze");
-		}
-
-		if (temperatures[0] == 0)
-		{
-			LCD_WriteText("Null");
-		}
-		char temp_char[5];
-		sprintf(temp_char, "%d", temperatures[0]);
-		LCD_GoTo(0, 1);
-		LCD_WriteText(temp_char);*/
-		//LCD_WriteText("TEST");
-		/*PORTF = 0xFF;
-		_delay_ms(1000);
-		PORTF = 0x00;
-		_delay_ms(1000);*/
     }
 }
 
